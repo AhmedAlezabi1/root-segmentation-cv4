@@ -1,0 +1,28 @@
+# Frontend-specific exclusions. These extend the rules in the root
+# .dockerignore - Docker uses this file in preference to the root one
+# when building with -f docker/Dockerfile.frontend.
+
+# Python source and ML artifacts are irrelevant to the frontend image.
+src
+tests
+notebooks
+docs
+weights
+models
+data
+*.h5
+*.pkl
+*.pt
+*.pth
+*.onnx
+*.keras
+mlruns
+wandb
+pyproject.toml
+uv.lock
+
+# Frontend's own build artifacts - the Dockerfile builds these fresh
+# inside the container, so shipping local copies just bloats the
+# build context and risks stale code in the image.
+frontend/.next
+frontend/node_modules

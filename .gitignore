@@ -1,0 +1,138 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[oc]
+*.pyd
+build/
+dist/
+wheels/
+*.egg-info/
+*.egg
+MANIFEST
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.uv/
+
+# ── Testing & coverage ─────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# ── Linting & formatting ───────────────────────────────────────────────────────
+.ruff_cache/
+.mypy_cache/
+
+# ── Documentation ──────────────────────────────────────────────────────────────
+docs/_build/
+docs/api/
+
+# ── Jupyter notebooks ──────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+# *.ipynb
+
+# ── ML / model artefacts ───────────────────────────────────────────────────────
+*.pt
+*.pth
+*.onnx
+*.pb
+*.pkl
+*.pickle
+*.joblib
+mlruns/
+weights/*
+!weights/.gitkeep
+!weights/unet_256px.h5
+!weights/lane_edges.npy
+checkpoints/
+runs/
+metrics/
+
+# ── Data ───────────────────────────────────────────────────────────────────────
+data/
+*.db
+*.csv
+*.parquet
+*.feather
+*.npz
+
+# Cost-analysis exports (Issue 4.10) are intentionally tracked
+!docs/cost_data/
+!docs/cost_data/*.csv
+
+/feedback_images/*.png
+/feedback_images/*.jpg
+/feedback_images/*.tiff
+
+
+# ── Images & media (datasets) ──────────────────────────────────────────────────
+# may want to version small sample/test images
+# *.jpg
+# *.jpeg
+# *.png
+# *.bmp
+# *.tiff
+# *.mp4
+# *.avi
+# *.mov
+
+# ── Secrets & credentials ──────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+service_account*.json
+
+# ── Azure ──────────────────────────────────────────────────────────────────────
+.azureml/
+azureml-models/
+az_cli_output/
+
+# ── Docker ─────────────────────────────────────────────────────────────────────
+# (keep your Dockerfiles, ignore any local volume mounts or overrides)
+docker/data/
+docker/models/
+docker-compose.override.yml
+
+# ── IDEs & editors ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS files ───────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs ───────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Node.js / Next.js (frontend) ───────────────────────────────────────────────
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+.npm
+.pnpm-debug.log*
+.yarn/
+.yarn-integrity
+.turbo/
+
+# ── CLI outputs ────────────────────────────────────────────────────────────────
+outputs/
+docker/.env
+
+# ── MLflow local file store ────────────────────────────────────────────────────
+mlruns/
+mlflow.db
+mlflow.db-journal

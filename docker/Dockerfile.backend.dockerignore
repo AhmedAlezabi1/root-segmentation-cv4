@@ -1,0 +1,6 @@
+# Backend-specific exclusions. These extend the rules in the root
+# .dockerignore - Docker uses this file in preference to the root one
+# when building with -f docker/Dockerfile.backend.
+
+# Frontend source is irrelevant to the backend image.
+frontend

@@ -1,0 +1,75 @@
+# Azure ML component spec for cv4.training.train.
+#
+# Trains the Residual Attention U-Net on the patched four-folder dataset
+# produced by the preprocess component (or any compatible dataset matching
+# the train_images/, train_masks/, val_images/, val_masks/ layout). Logs
+# hyperparameters and per-epoch metrics to MLflow and writes the trained
+# .h5 model and a metrics JSON to the requested output paths.
+#
+# Designed to plug into the cv4 training pipeline downstream of preprocess
+# and upstream of evaluate.
+
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+type: command
+
+name: cv4_train
+display_name: cv4 Train (Residual Attention U-Net)
+version: 1
+description: Trains the cv4 Residual Attention U-Net on patched image/mask data.
+
+inputs:
+  patched_data:
+    type: uri_folder
+    description: Patched four-folder dataset from cv4_preprocess.
+  learning_rate:
+    type: number
+    default: 0.0001
+    description: Adam optimizer learning rate.
+  batch_size:
+    type: integer
+    default: 16
+    description: Training batch size.
+  epochs:
+    type: integer
+    default: 50
+    description: Maximum training epochs (early stopping may halt sooner).
+  augmentation_strength:
+    type: string
+    default: mild
+    description: Augmentation preset; one of none, mild, strong.
+  patch_size:
+    type: integer
+    default: 256
+    description: Edge length of square patches.
+  max_steps_per_epoch:
+    type: integer
+    optional: true
+    description: Cap training steps per epoch for smoke tests; omit for real runs.
+  max_val_steps:
+    type: integer
+    optional: true
+    description: Cap validation steps for smoke tests; omit for real runs.
+
+outputs:
+  trained_model:
+    type: uri_folder
+    description: Folder containing the trained model.h5 file.
+  metrics:
+    type: uri_folder
+    description: Folder containing the best-epoch metrics.json file.
+
+code: ../src
+environment: azureml:cv4-training@latest
+
+command: >-
+  python -m cv4.training.train
+  --data-path ${{inputs.patched_data}}
+  --model-output-path ${{outputs.trained_model}}/model.h5
+  --metrics-output-path ${{outputs.metrics}}/metrics.json
+  --learning-rate ${{inputs.learning_rate}}
+  --batch-size ${{inputs.batch_size}}
+  --epochs ${{inputs.epochs}}
+  --augmentation-strength ${{inputs.augmentation_strength}}
+  --patch-size ${{inputs.patch_size}}
+  [--max-steps-per-epoch ${{inputs.max_steps_per_epoch}}]
+  [--max-val-steps ${{inputs.max_val_steps}}]

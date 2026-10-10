@@ -1,0 +1,48 @@
+# Azure ML component spec for cv4.training.evaluate.
+#
+# Loads a trained model, evaluates patch-level F1/IoU/precision/recall on the
+# validation set, and writes a metrics.json plus sample overlay PNGs. The
+# metrics.json feeds the conditional registration step downstream.
+
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+type: command
+
+name: cv4_evaluate
+display_name: cv4 Evaluate (patch-level metrics + overlays)
+version: 1
+description: Evaluates a trained cv4 segmentation model on the validation set.
+
+inputs:
+  trained_model:
+    type: uri_folder
+    description: Folder containing model.h5 from the train component.
+  patched_data:
+    type: uri_folder
+    description: Patched four-folder dataset (uses the val_ splits).
+  batch_size:
+    type: integer
+    default: 32
+    description: Batch size for patch prediction.
+  patch_size:
+    type: integer
+    default: 256
+
+outputs:
+  eval_metrics:
+    type: uri_folder
+    description: Folder containing metrics.json with F1, IoU, precision, recall.
+  overlays:
+    type: uri_folder
+    description: Folder containing sample overlay PNGs for visual inspection.
+
+code: ../src
+environment: azureml:cv4-training@latest
+
+command: >-
+  python -m cv4.training.evaluate
+  --model-path ${{inputs.trained_model}}/model.h5
+  --data-path ${{inputs.patched_data}}
+  --metrics-output-path ${{outputs.eval_metrics}}/metrics.json
+  --overlays-output-dir ${{outputs.overlays}}
+  --batch-size ${{inputs.batch_size}}
+  --patch-size ${{inputs.patch_size}}

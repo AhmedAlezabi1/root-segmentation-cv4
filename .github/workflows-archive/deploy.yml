@@ -1,0 +1,300 @@
+name: Deploy
+
+# Runs after the build workflow ("Build and push Docker images to GHCR")
+# completes successfully on main. Both deploy jobs are gated behind a manual
+# approval (the `production` GitHub Environment) and run in parallel: one
+# updates the on-prem Portainer deployment, the other updates the Azure
+# Container Apps deployment. They share the same released image SHA.
+#
+# On-prem (Portainer) is firewalled, so deployment is pull-based: the job
+# rewrites the image SHA in the deploy-branch compose and commits it, and
+# Portainer (watching that branch) re-pulls. Azure is publicly reachable, so
+# deployment is push-based: the job authenticates with OIDC and updates each
+# Container App directly.
+
+on:
+  workflow_run:
+    workflows: ["Build and push Docker images to GHCR"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: >
+          Image SHA tag to deploy (e.g. sha-0391122). Leave blank to redeploy
+          the tag currently in the deploy branch. Only needed when triggering
+          manually — automatic runs resolve the tag from the build workflow.
+        required: false
+        default: ""
+
+env:
+  DEPLOY_BRANCH: deploy
+  COMPOSE_FILE: docker/docker-compose.portainer.yml
+  REGISTRY: ghcr.io
+  OWNER: bredauniversityadsai
+  REPO: 2025-26d-fai2-adsai-group-computervision4
+  AZURE_RESOURCE_GROUP: buas-y2
+
+jobs:
+  deploy-portainer:
+    # Only proceed if the build workflow actually succeeded (workflow_run fires
+    # on completion regardless of outcome).
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    # The `production` environment carries the manual approval gate: this job
+    # pauses until a required reviewer approves it in the GitHub UI.
+    environment: production
+    permissions:
+      contents: write
+
+    steps:
+      - name: Resolve the released commit SHA
+        id: sha
+        run: |
+          # workflow_run: use the build's head SHA (the real built commit).
+          # workflow_dispatch with image_tag input: use that tag directly.
+          # workflow_dispatch with no input: read the tag currently in the
+          # deploy branch so manual reruns don't accidentally advance to a
+          # workflow-only commit that has no corresponding Docker image.
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            FULL_SHA="${{ github.event.workflow_run.head_sha }}"
+            SHORT_SHA="$(echo "${FULL_SHA}" | cut -c1-7)"
+            echo "tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+            echo "Released image tag: sha-${SHORT_SHA}"
+          elif [ -n "${{ inputs.image_tag }}" ]; then
+            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+            echo "Released image tag: ${{ inputs.image_tag }}"
+          else
+            TAG=$(curl -s "https://raw.githubusercontent.com/${{ github.repository }}/deploy/${COMPOSE_FILE}" \
+              | grep "cv4-backend:" | head -1 | grep -oE 'sha-[a-f0-9]+')
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "Released image tag: ${TAG} (read from deploy branch)"
+          fi
+
+      - name: Check out the deploy branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_BRANCH }}
+          # A token with write access so the commit below can be pushed back.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pin the compose images to the released SHA
+        run: |
+          # Rewrite every cv4 image tag in the deploy compose to the released
+          # SHA. Matches backend, frontend, and airflow images.
+          sed -i -E \
+            "s#(ghcr\.io/bredauniversityadsai/2025-26d-fai2-adsai-group-computervision4/cv4-(backend|frontend|airflow)):[A-Za-z0-9._-]+#\1:${{ steps.sha.outputs.tag }}#g" \
+            "${COMPOSE_FILE}"
+          echo "Updated image tags in ${COMPOSE_FILE}:"
+          grep "image:" "${COMPOSE_FILE}"
+
+      - name: Commit and push the release to the deploy branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "No image change to release; deploy branch already at ${{ steps.sha.outputs.tag }}."
+            exit 0
+          fi
+          git add "${COMPOSE_FILE}"
+          git commit -m "deploy: release ${{ steps.sha.outputs.tag }}"
+          git push origin "${DEPLOY_BRANCH}"
+
+      - name: Deployment notice
+        run: |
+          echo "Released ${{ steps.sha.outputs.tag }} to the deploy branch." >> "$GITHUB_STEP_SUMMARY"
+          echo "Portainer will re-pull on its next poll (within a few minutes)." >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-azure:
+    # Same gate and trigger as the Portainer job; runs in parallel. Azure is
+    # publicly reachable, so this job pushes the deployment by updating each
+    # Container App to the released image.
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    environment: production
+    # id-token: write is required for OIDC: it lets the job request a short
+    # lived token that azure/login exchanges for Azure credentials, so no
+    # Azure secret is stored in the repo.
+    permissions:
+      id-token: write
+      contents: read
+
+    # The two Container Apps are updated independently, one per matrix leg.
+    # Both serve the same released image tag.
+    strategy:
+      matrix:
+        app: [cv4-backend, cv4-frontend]
+
+    steps:
+      - name: Resolve the released commit SHA
+        id: sha
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            FULL_SHA="${{ github.event.workflow_run.head_sha }}"
+            SHORT_SHA="$(echo "${FULL_SHA}" | cut -c1-7)"
+            echo "tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+            echo "Released image tag: sha-${SHORT_SHA}"
+          elif [ -n "${{ inputs.image_tag }}" ]; then
+            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+            echo "Released image tag: ${{ inputs.image_tag }}"
+          else
+            TAG=$(curl -s "https://raw.githubusercontent.com/${{ github.repository }}/deploy/${{ env.COMPOSE_FILE }}" \
+              | grep "cv4-backend:" | head -1 | grep -oE 'sha-[a-f0-9]+')
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "Released image tag: ${TAG} (read from deploy branch)"
+          fi
+
+      - name: Log in to Azure with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Update ${{ matrix.app }} to the released image
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            # Point the Container App at the new image tag. The app keeps its
+            # existing GHCR registry credential, so it can pull the private
+            # image; only the tag changes here.
+            az containerapp update \
+              --name ${{ matrix.app }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --image ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.REPO }}/${{ matrix.app }}:${{ steps.sha.outputs.tag }}
+            # ACA cannot reach the on-premises GPU endpoint (university firewall),
+            # so the cloud backend always uses local CPU inference.
+            if [ "${{ matrix.app }}" = "cv4-backend" ]; then
+              az containerapp update \
+                --name cv4-backend \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --set-env-vars "CV4_INFERENCE_MODE=local"
+            fi
+
+      - name: Verify the deployment is healthy
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            # Confirm the app is running after the update. A failed running
+            # status here means the new image did not start, which is the
+            # signal to roll back.
+            STATE=$(az containerapp show \
+              --name ${{ matrix.app }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --query "properties.runningStatus" -o tsv)
+            echo "${{ matrix.app }} running status: ${STATE}"
+            FQDN=$(az containerapp show \
+              --name ${{ matrix.app }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --query "properties.configuration.ingress.fqdn" -o tsv)
+            echo "Updated ${{ matrix.app }} to ${{ steps.sha.outputs.tag }} (https://${FQDN})" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Rollback note
+        if: failure()
+        run: |
+          echo "Deploy of ${{ matrix.app }} failed. Roll back by re-running an" >> "$GITHUB_STEP_SUMMARY"
+          echo "earlier successful build, or update the app to a previous SHA with:" >> "$GITHUB_STEP_SUMMARY"
+          echo "  az containerapp update --name ${{ matrix.app }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --image <previous-sha>" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-airflow-azure:
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+
+    steps:
+      - name: Resolve the released commit SHA
+        id: sha
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            FULL_SHA="${{ github.event.workflow_run.head_sha }}"
+            SHORT_SHA="$(echo "${FULL_SHA}" | cut -c1-7)"
+            echo "tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+            echo "Released image tag: sha-${SHORT_SHA}"
+          elif [ -n "${{ inputs.image_tag }}" ]; then
+            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+            echo "Released image tag: ${{ inputs.image_tag }}"
+          else
+            TAG=$(curl -s "https://raw.githubusercontent.com/${{ github.repository }}/deploy/${{ env.COMPOSE_FILE }}" \
+              | grep "cv4-airflow:" | head -1 | grep -oE 'sha-[a-f0-9]+')
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "Released image tag: ${TAG} (read from deploy branch)"
+          fi
+
+      - name: Log in to Azure with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy cv4-airflow Container App
+        uses: azure/cli@v2
+        env:
+          AIRFLOW_IMAGE: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.REPO }}/cv4-airflow:${{ steps.sha.outputs.tag }}
+        with:
+          azcliversion: latest
+          inlineScript: |
+            PROVISIONING_STATE=$(az containerapp show --name cv4-airflow --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "properties.provisioningState" -o tsv 2>/dev/null || echo "NotFound")
+            if [ "$PROVISIONING_STATE" = "Failed" ]; then
+              az containerapp delete --name cv4-airflow --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --yes
+              PROVISIONING_STATE="NotFound"
+            fi
+            ACA_ENV_ID=$(az containerapp show \
+              --name cv4-backend \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --query "properties.environmentId" -o tsv)
+            ACA_ENV="${ACA_ENV_ID##*/}"
+            if [ "$PROVISIONING_STATE" = "Succeeded" ]; then
+              az containerapp registry set \
+                --name cv4-airflow \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --server ${{ env.REGISTRY }} \
+                --username ${{ github.actor }} \
+                --password ${{ secrets.GITHUB_TOKEN }}
+              az containerapp update \
+                --name cv4-airflow \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --image "$AIRFLOW_IMAGE" \
+                --cpu 1.0 \
+                --memory 2.0Gi
+            else
+              az containerapp create \
+                --name cv4-airflow \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --environment "$ACA_ENV" \
+                --image "$AIRFLOW_IMAGE" \
+                --registry-server ${{ env.REGISTRY }} \
+                --registry-username ${{ github.actor }} \
+                --registry-password ${{ secrets.GITHUB_TOKEN }} \
+                --target-port 8080 \
+                --ingress external \
+                --min-replicas 1 \
+                --max-replicas 1 \
+                --cpu 1.0 \
+                --memory 2.0Gi \
+                --env-vars \
+                  "AIRFLOW__CORE__EXECUTOR=SequentialExecutor" \
+                  "AIRFLOW__CORE__LOAD_EXAMPLES=false" \
+                  "_AIRFLOW_WWW_USER_CREATE=true" \
+                  "_AIRFLOW_WWW_USER_USERNAME=admin" \
+                  "_AIRFLOW_WWW_USER_PASSWORD=admin" \
+                  "_AIRFLOW_DB_MIGRATE=true" \
+                  "AIRFLOW__WEBSERVER__SECRET_KEY=cv4-airflow-secret-2026"
+            fi
+
+      - name: Print Airflow URL
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            FQDN=$(az containerapp show \
+              --name cv4-airflow \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --query "properties.configuration.ingress.fqdn" -o tsv)
+            echo "Airflow UI: https://${FQDN}" >> "$GITHUB_STEP_SUMMARY"

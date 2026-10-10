@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --background: #f5f4f1;
+  --foreground: #1a1a18;
+}
+
+html,
+body {
+  height: 100%;
+  background: #f5f4f1 !important;
+  color: #1a1a18 !important;
+}
+
+body {
+  font-family: "JetBrains Mono", "Fira Mono", ui-monospace, monospace;
+  -webkit-font-smoothing: antialiased;
+}

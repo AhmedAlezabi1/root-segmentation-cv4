@@ -1,0 +1,139 @@
+# syntax=docker/dockerfile:1.7
+
+# CV4 backend: FastAPI inference API, multi-stage build with uv.
+#
+# Build from the repo root:
+#   docker build -f docker/Dockerfile.backend -t cv4-backend:latest .
+#
+# Run (local / plain HTTP) - JWT-only auth, development cookies:
+#   docker run --rm -p 8000:8000 ^
+#     -e CV4_ENV=development ^
+#     -e JWT_SECRET_KEY=<strong secret> ^
+#     -v "%cd%\models:/app/models:ro" ^
+#     --name cv4-backend cv4-backend:latest
+#
+# Run (production / HTTPS) - JWT-only auth, Secure cookies:
+#   docker run --rm -p 8000:8000 ^
+#     -e JWT_SECRET_KEY=<strong secret> ^
+#     -v "%cd%\models:/app/models:ro" ^
+#     --name cv4-backend cv4-backend:latest
+#
+# Authentication is JWT-only; there is no API key. JWT_SECRET_KEY signs the
+# tokens and should always be set (if unset, a hardcoded development secret is
+# used, but only while CV4_ENV=development). CV4_ENV controls cookie security
+# only: in development the auth cookies are not marked Secure so they work over
+# plain HTTP; omit it in production so cookies are HTTPS-only. Nothing is baked
+# into the image, by design - the same image is promoted unchanged from local
+# to on-prem to cloud.
+#
+# Override the weights location with -e CV4_MODEL_DIR=/some/other/path.
+
+# Pin uv from its official image so every build uses the same version
+# regardless of what each developer has installed locally. Bump this to match
+# the uv that produced uv.lock (run `uv --version` to check).
+FROM ghcr.io/astral-sh/uv:0.5.14 AS uv
+
+
+# Builder stage. Resolves and installs all dependencies into a venv at
+# /app/.venv. Has compilers available so wheels can build from source if
+# needed. Nothing from this stage ships in the final image except the venv
+# and the project source.
+FROM python:3.12-slim AS builder
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+# Compilers are needed only while installing. Keeping them out of the runtime
+# stage cuts roughly 200 MB off the final image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# UV_LINK_MODE=copy avoids hardlinks across the cache mount boundary.
+# UV_COMPILE_BYTECODE=1 precompiles .pyc files for faster cold starts.
+# UV_PYTHON_DOWNLOADS=never forces uv to use the base image's Python instead
+# of pulling its own, which keeps the venv consistent with the runtime stage.
+ENV UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv
+
+WORKDIR /app
+
+# Install dependencies before copying source so this layer stays cached when
+# only the application code changes. The cache mount keeps uv's download
+# cache between builds, which makes rebuilds dramatically faster.
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev
+
+# Install the project itself in a separate layer. README.md is required
+# because pyproject.toml references it as the long description.
+COPY src ./src
+COPY README.md ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+
+
+# Runtime stage. Slim image with only the prebuilt venv, source code, and the
+# minimum shared libraries OpenCV needs to import.
+FROM python:3.12-slim AS runtime
+
+# libgl1 and libglib2.0-0 are dynamic dependencies of opencv-python. Without
+# them, `import cv2` fails at runtime even though the wheel installed fine.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Run as a non-root user. If the container is ever exposed or compromised,
+# the attacker does not get root inside it.
+RUN groupadd --system --gid 1001 cv4 \
+    && useradd --system --uid 1001 --gid cv4 --create-home --home-dir /home/cv4 cv4
+
+# PYTHONUNBUFFERED=1 makes logs flush line-by-line so `docker logs` shows
+# output in real time instead of in 4KB chunks.
+# CV4_MODEL_DIR is the only CV4_* var set in the image - auth vars are
+# intentionally left to the run command so the same image works in dev and prod.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/app/.venv/bin:$PATH" \
+    CV4_MODEL_DIR=/app/models
+
+WORKDIR /app
+
+COPY --from=builder --chown=cv4:cv4 /app/.venv /app/.venv
+COPY --from=builder --chown=cv4:cv4 /app/src   /app/src
+
+# Alembic config and migration scripts. Baked into the image so the
+# db-migrate sidecar in docker-compose can run `alembic upgrade head`
+# against the same source tree the backend is using.
+COPY --chown=cv4:cv4 alembic.ini /app/alembic.ini
+COPY --chown=cv4:cv4 alembic     /app/alembic
+
+COPY --chown=cv4:cv4 weights/ /app/models/
+
+# Pre-create the feedback-image directory and give it to the cv4 user. The app
+# calls FEEDBACK_IMAGE_DIR.mkdir(...) at startup; because the process runs as
+# the non-root cv4 user and /app is root-owned, creating it at runtime would
+# raise PermissionError and abort startup ("Application startup failed").
+# Creating it here (as root, before USER cv4) with cv4 ownership avoids that,
+# and lets a named volume mounted at this path inherit cv4 ownership on first
+# init so feedback images can be written and persisted.
+RUN mkdir -p /app/feedback_images && chown cv4:cv4 /app/feedback_images
+
+USER cv4
+
+EXPOSE 8000
+
+# Liveness probe against /health. Uses urllib so we do not have to install
+# curl. start-period is 60s because TensorFlow's first import + load_model()
+# takes roughly 30s on a cold container - any shorter and the orchestrator
+# may mark the container unhealthy and restart it before it ever finishes
+# starting up.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request,sys; \
+sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=3).status==200 else 1)" \
+    || exit 1
+
+CMD ["uvicorn", "cv4.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,0 +1,155 @@
+# Portainer deployment stack for cv4.
+#
+# Use this file when deploying on the university Portainer server (portainer.example.com).
+# Portainer no longer supports remote builds, so images are pre-built and pushed
+# to GHCR by GitHub Actions (.github/workflows/docker-publish.yml).
+#
+# BEFORE DEPLOYING:
+#   Confirm the latest GitHub Actions run on main succeeded (check the Actions tab),
+#   so the GHCR images this stack pulls are up to date.
+#
+# Host ports: frontend is published on 2016, backend on 2017 (the group's assigned
+# ports). The frontend is reachable at http://portainer.example.com:2016.
+#
+# Schema: the one-shot db-migrate service runs `alembic upgrade head` against the
+# database on each deploy (reusing the backend image, which bakes alembic in), then
+# exits. The backend blocks on it completing, so the schema is always at head.
+#
+# In Portainer, select "buasadsai-github (ghcr.io)" as the registry when creating
+# the stack — this pre-configured credential allows pulling private GHCR images.
+
+services:
+  frontend:
+    image: ghcr.io/bredauniversityadsai/2025-26d-fai2-adsai-group-computervision4/cv4-frontend:latest
+    ports:
+      - "2016:3000"
+    restart: unless-stopped
+    environment:
+      # Runtime parity with the value baked into the image at build time
+      # (.github/workflows/docker-publish.yml). "backend" resolves on cv4_net.
+      - API_URL=http://backend:8000
+    networks:
+      - cv4_net
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  backend:
+    image: ghcr.io/bredauniversityadsai/2025-26d-fai2-adsai-group-computervision4/cv4-backend:latest
+    ports:
+      - "2017:8000"
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      # Authentication is JWT-only. JWT_SECRET_KEY signs the tokens — set a real
+      # secret here (generate with:
+      #   python -c "import secrets; print(secrets.token_hex(32))").
+      # If left empty, a hardcoded development secret is used, but ONLY while
+      # CV4_ENV=development. Never rely on that for a real deployment.
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-}
+      # CV4_ENV controls cookie security, NOT authentication. In development the
+      # auth cookies are not marked Secure, which is required here because this
+      # stack is served over plain HTTP: browsers will not send a Secure cookie
+      # over HTTP, so switching to production mode would break login until the
+      # deployment is fronted by HTTPS.
+      - CV4_ENV=${CV4_ENV:-development}
+      # Where the API writes user-submitted feedback images. Matches the mount
+      # path below. The backend image pre-creates this directory owned by the
+      # cv4 user, so the named volume is writable on first init.
+      - CV4_FEEDBACK_IMAGE_DIR=/app/feedback_images
+      - APPLICATIONINSIGHTS_CONNECTION_STRING=${APPLICATIONINSIGHTS_CONNECTION_STRING}
+      - CV4_INFERENCE_MODE=${CV4_INFERENCE_MODE:-remote}
+      - AZURE_ML_ENDPOINT_URL=${AZURE_ML_ENDPOINT_URL:-http://portainer.example.com:32452/api/v1/endpoint/cv4-root-seg/score}
+      - AZURE_ML_ENDPOINT_KEY=${AZURE_ML_ENDPOINT_KEY:-}
+      - CV4_ENDPOINT_TIMEOUT_S=${CV4_ENDPOINT_TIMEOUT_S:-60}
+    volumes:
+      # Persist feedback images across redeploys (the container filesystem is
+      # ephemeral). Without this the images are lost every time the stack is
+      # updated.
+      - cv4_feedback_images:/app/feedback_images
+    networks:
+      - cv4_net
+    depends_on:
+      db:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+
+  db-migrate:
+    # One-shot sidecar: runs `alembic upgrade head` against the db and exits.
+    # Reuses the backend image so migrations stay in lockstep with the
+    # application code - the image bakes alembic.ini and the alembic/ dir.
+    image: ghcr.io/bredauniversityadsai/2025-26d-fai2-adsai-group-computervision4/cv4-backend:latest
+    restart: "no"
+    environment:
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    networks:
+      - cv4_net
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    ports:
+      - "5433:5432"
+    volumes:
+      - cv4_db_data:/var/lib/postgresql/data
+    networks:
+      - cv4_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  airflow:
+    image: ghcr.io/bredauniversityadsai/2025-26d-fai2-adsai-group-computervision4/cv4-airflow:latest
+    ports:
+      - "2018:8080"
+    restart: unless-stopped
+    environment:
+      # standalone runs webserver + scheduler in one process using SQLite —
+      # no extra database container required.
+      - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      - AIRFLOW__WEBSERVER__SECRET_KEY=${AIRFLOW_SECRET_KEY:-change-me-in-production}
+      - _AIRFLOW_WWW_USER_CREATE=true
+      - _AIRFLOW_WWW_USER_USERNAME=${AIRFLOW_USER:-admin}
+      - _AIRFLOW_WWW_USER_PASSWORD=${AIRFLOW_PASSWORD:-admin}
+      - _AIRFLOW_DB_MIGRATE=true
+      # Optional: set these to enable actual Azure ML job submission from the DAG.
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID:-}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET:-}
+    volumes:
+      - airflow_home:/opt/airflow
+    networks:
+      - cv4_net
+    command: standalone
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+networks:
+  cv4_net:
+    driver: bridge
+
+volumes:
+  cv4_db_data:
+  cv4_feedback_images:
+  airflow_home:

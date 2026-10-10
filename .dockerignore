@@ -1,0 +1,85 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python bytecode and caches
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+.Python
+
+# Virtual environments. The .venv folder is huge and must never be in the
+# build context, otherwise every build ships gigabytes of host-side junk
+# to the Docker daemon.
+.venv
+venv
+env
+.env
+
+# Tooling caches
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+.tox
+
+# Build artifacts
+build
+dist
+*.whl
+*.tar.gz
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Notebooks and exploration code, never used in the image
+notebooks
+*.ipynb
+.ipynb_checkpoints
+
+# Tests do not need to ship in the production image
+tests
+
+# Documentation source and Sphinx build output
+docs
+
+# Model weights are baked into the image from the weights/ folder
+*.pkl
+*.pt
+*.pth
+*.onnx
+*.keras
+
+# Raw datasets must never leak into the image
+data
+*.csv
+*.parquet
+
+# Experiment tracking output
+mlruns
+wandb
+runs
+
+# Logs
+*.log
+logs
+
+# Docker config not needed inside the image
+docker
+docker-compose*.yml
+.dockerignore
+
+# Pre-commit config not needed at runtime
+.pre-commit-config.yaml

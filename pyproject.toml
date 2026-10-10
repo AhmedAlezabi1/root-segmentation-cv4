@@ -1,0 +1,76 @@
+[project]
+name = "cv4"
+version = "0.1.0"
+description = "Plant root segmentation and landmark detection for NPEC"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+authors = [
+    {name = "Ahmed Alezabi (245226)"},
+    {name = "Abdelrahman (245769)"},
+    {name = "Nazeer Idris (244968)"},
+    {name = "Stijn Korver (242824)"},
+    {name = "Floris Lokhorst (236918)"},
+]
+dependencies = [
+    "fastapi>=0.135.3",
+    "matplotlib>=3.10.8",
+    "networkx>=3.6.1",
+    "opencv-python>=4.13.0.92",
+    "optree==0.14.1",
+    "pandas>=2.2,<3",
+    "psycopg[binary]>=3.3.4",
+    "python-multipart>=0.0.26",
+    "scikit-image>=0.26.0",
+    "scipy>=1.17.1",
+    "alembic>=1.13.0",
+    "sqlalchemy>=2.0.49",
+    "tensorflow-intel==2.18.0; sys_platform == 'win32'",
+    "tensorflow==2.18.0; sys_platform != 'win32'",
+    "typer>=0.25.1",
+    "uvicorn>=0.44.0",
+    "python-dotenv>=1.0.0",
+    "mlflow>=2.18",
+    "pillow>=12.2.0",
+    "numpy>=2.0.2",
+    "pyjwt>=2.12.1",
+    "azure-monitor-opentelemetry>=1.8.8",
+    "opentelemetry-instrumentation-fastapi==0.61b0",
+    "httpx>=0.28.1",
+]
+
+[project.scripts]
+cv4-predict = "cv4.cli:predict_app"
+cv4-train = "cv4.cli:train_app"
+
+[dependency-groups]
+azure = [
+    "azure-ai-ml>=1.26.0",
+    "azure-identity>=1.23.0",
+    "azure-mgmt-compute>=33.0.0",
+]
+dev = [
+    "pre-commit>=4.5.1",
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.10",
+    "sphinx>=9.1.0",
+    "sphinx-rtd-theme>=3.1.0",
+]
+
+[tool.ruff]
+line-length = 150
+exclude = ["notebooks"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cv4"]

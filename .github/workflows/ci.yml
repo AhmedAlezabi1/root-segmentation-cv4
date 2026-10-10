@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install project dependencies
+        run: uv sync
+
+      - name: Ruff lint
+        run: uv run ruff check src/cv4 tests scripts
+
+      - name: Ruff format check
+        run: uv run ruff format --check src/cv4 tests scripts
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install project dependencies
+        run: uv sync
+
+      - name: Install report plugins
+        run: uv pip install pytest-md-report pytest-cov
+
+      - name: Run tests with coverage and markdown report
+        id: pytest
+        env:
+          DATABASE_URL: postgresql+psycopg://fake:fake@localhost:5432/fake
+        run: |
+          uv run pytest tests/ \
+            --ignore=tests/test_db_connection.py \
+            --cov=cv4.config --cov=cv4.preprocessing --cov=cv4.inference \
+            --cov=cv4.postprocessing --cov=cv4.segmentation --cov=cv4.localization \
+            --cov=cv4.pipeline \
+            --cov-report=term-missing \
+            --cov-report=json:coverage.json \
+            --md-report --md-report-output=test-report.md
+
+      - name: Build coverage summary
+        if: always()
+        run: |
+          python << 'EOF'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("coverage.json").read_text())
+          files = data["files"]
+          total_cov = data["totals"]["percent_covered"]
+
+          lines = ["## Coverage", "", "| Module | Coverage |", "|--------|----------|"]
+          for path in sorted(files):
+              module = path.replace("src/", "").replace(".py", "").replace("/", ".")
+              pct = files[path]["summary"]["percent_covered"]
+              lines.append(f"| `{module}` | {pct:.1f}% |")
+          lines.append(f"| **Total** | **{total_cov:.1f}%** |")
+
+          Path("coverage-summary.md").write_text("\n".join(lines))
+          EOF
+
+      - name: Add report to job summary
+        if: always()
+        run: |
+          echo "## Unit test report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat test-report.md >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat coverage-summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload reports as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: |
+            test-report.md
+            coverage-summary.md
+            coverage.json

@@ -1,0 +1,105 @@
+name: Build and push Docker images to GHCR
+
+on:
+  # Validate builds on PRs targeting main — catches broken Dockerfiles before merge.
+  pull_request:
+    branches: [main]
+    paths:
+      - "docker/Dockerfile.backend"
+      - "docker/Dockerfile.frontend"
+      - "docker/Dockerfile.airflow"
+      - "src/**"
+      - "frontend/**"
+      - "dags/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  # Push to GHCR only after merge to main.
+  push:
+    branches: [main]
+    paths:
+      - "docker/Dockerfile.backend"
+      - "docker/Dockerfile.frontend"
+      - "docker/Dockerfile.airflow"
+      - "src/**"
+      - "frontend/**"
+      - "dags/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: bredauniversityadsai
+  REPO: 2025-26d-fai2-adsai-group-computervision4
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      matrix:
+        include:
+          - service: backend
+            dockerfile: docker/Dockerfile.backend
+            build_args: ""
+          - service: frontend
+            dockerfile: docker/Dockerfile.frontend
+            build_args: ""
+          - service: airflow
+            dockerfile: docker/Dockerfile.airflow
+            build_args: ""
+
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        timeout-minutes: 10
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        # Only log in when we're going to push. Skipping on PRs avoids
+        # exposing the token to workflows triggered from forks.
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.REPO }}/cv4-${{ matrix.service }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          # Only push on merge to main, not on PR builds.
+          push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            ${{ matrix.build_args }}
+            NEXT_PUBLIC_APPLICATIONINSIGHTS_CONNECTION_STRING=${{ secrets.NEXT_PUBLIC_APPLICATIONINSIGHTS_CONNECTION_STRING }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

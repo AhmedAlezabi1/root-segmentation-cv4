@@ -1,0 +1,39 @@
+name: Fix ACA inference mode
+
+# One-shot workflow to set CV4_INFERENCE_MODE=local on the ACA backend.
+# Run this manually from the Actions tab whenever the cloud inference mode
+# needs to be reset (e.g. after a redeploy accidentally sets it to remote).
+
+on:
+  workflow_dispatch:
+
+env:
+  AZURE_RESOURCE_GROUP: buas-y2
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Log in to Azure with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set CV4_INFERENCE_MODE=local on cv4-backend
+        uses: azure/cli@v2
+        with:
+          azcliversion: latest
+          inlineScript: |
+            az containerapp update \
+              --name cv4-backend \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --set-env-vars "CV4_INFERENCE_MODE=local"
+            echo "cv4-backend is now using local CPU inference." >> "$GITHUB_STEP_SUMMARY"
+            echo "Cloud inference is back online." >> "$GITHUB_STEP_SUMMARY"

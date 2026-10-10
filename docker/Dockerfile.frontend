@@ -1,0 +1,45 @@
+# Multi-stage build for the cv4 frontend (Next.js).
+# Stage 1 installs dependencies, stage 2 builds the app, stage 3 runs it
+# from the standalone output so the final image stays small.
+
+# ---- Stage 1: install dependencies ----
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+# ---- Stage 2: build the app ----
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY frontend/ ./
+
+# API URL baked at build time, overridable at runtime (see runner stage).
+ARG API_URL=http://localhost:8000
+ENV API_URL=$API_URL
+ARG NEXT_PUBLIC_APPLICATIONINSIGHTS_CONNECTION_STRING=
+ENV NEXT_PUBLIC_APPLICATIONINSIGHTS_CONNECTION_STRING=$NEXT_PUBLIC_APPLICATIONINSIGHTS_CONNECTION_STRING
+RUN npm run build
+
+# ---- Stage 3: runtime ----
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+
+# Run as a non-root user, matching the convention from Dockerfile.backend.
+RUN addgroup -S cv4 && adduser -S cv4 -G cv4
+
+# Copy only the standalone build output, static assets, and public folder.
+COPY --from=builder --chown=cv4:cv4 /app/.next/standalone ./
+COPY --from=builder --chown=cv4:cv4 /app/.next/static ./.next/static
+COPY --from=builder --chown=cv4:cv4 /app/public ./public
+
+# Backend API URL default. Override at runtime via -e API_URL=...
+ENV API_URL=http://localhost:8000
+
+USER cv4
+EXPOSE 3000
+CMD ["node", "server.js"]

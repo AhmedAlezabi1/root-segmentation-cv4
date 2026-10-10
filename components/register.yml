@@ -1,0 +1,47 @@
+# Azure ML component spec for cv4.training.register.
+#
+# Reads evaluation metrics, applies an F1 threshold, and registers the
+# trained model with the workspace's model registry when the threshold is
+# met. Uses the Azure ML SDK (MLClient.models.create_or_update) via
+# DefaultAzureCredential, which inside a job resolves to the job's managed
+# identity.
+
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+type: command
+
+name: cv4_register
+display_name: cv4 Register (conditional model registration)
+version: 2
+description: Conditionally registers a trained model with Azure ML based on F1 threshold.
+
+inputs:
+  trained_model:
+    type: uri_folder
+    description: Folder containing model.h5 from the train component.
+  eval_metrics:
+    type: uri_folder
+    description: Folder containing metrics.json from the evaluate component.
+  model_name:
+    type: string
+    default: cv4_root_segmentation
+    description: Name under which the model is registered.
+  f1_threshold:
+    type: number
+    default: 0.80
+    description: Validation F1 floor; models at or above this score are registered.
+
+outputs:
+  decision:
+    type: uri_folder
+    description: Folder containing decision.json describing the registration outcome.
+
+code: ../src
+environment: azureml:cv4-cpu@latest
+
+command: >-
+  python -m cv4.training.register
+  --metrics-path ${{inputs.eval_metrics}}/metrics.json
+  --model-path ${{inputs.trained_model}}/model.h5
+  --decision-output-path ${{outputs.decision}}/decision.json
+  --model-name ${{inputs.model_name}}
+  --f1-threshold ${{inputs.f1_threshold}}

@@ -1,0 +1,117 @@
+# Local dev stack for cv4. Brings up the Next.js frontend, the FastAPI
+# backend, a Postgres database that the backend connects to, and a
+# one-shot db-migrate sidecar. Data persists in a named volume so it
+# survives container restarts.
+#
+# db-migrate runs `alembic upgrade head` against the database on every
+# `up`, then exits. The backend service blocks on it completing
+# successfully, so the schema is always at head before the API starts.
+# On re-runs against an already-migrated database it's a no-op.
+#
+# Credentials are loaded from a .env file in this directory - see
+# .env.example for the variables that need to be set. Never commit the
+# real .env to git.
+#
+# Run from the repo root:
+#   docker compose -f docker/docker-compose.yml up --build
+#
+# Tear down (keep data):
+#   docker compose -f docker/docker-compose.yml down
+#
+# Tear down (wipe data):
+#   docker compose -f docker/docker-compose.yml down -v
+
+services:
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+      args:
+        # Next.js bakes the /api/* rewrite destination (frontend/next.config.ts)
+        # into the build, so the backend URL must be set at BUILD time, not just
+        # runtime. "backend" resolves to the backend service on cv4_net.
+        - API_URL=http://backend:8000
+    ports:
+      - "3000:3000"
+    environment:
+      # Kept in sync with the build arg above. Harmless for the baked rewrite,
+      # but documents the backend location and covers any runtime env reads.
+      - API_URL=http://backend:8000
+    networks:
+      - cv4_net
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      # Service name "db" resolves on the cv4_net network. Use the
+      # internal port (5432) here, not the host-mapped port (5433).
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - CV4_ENV=development
+    volumes:
+      - ../weights:/app/models:ro
+    networks:
+      - cv4_net
+    depends_on:
+      db:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    # No healthcheck block here - Dockerfile.backend already declares
+    # a HEALTHCHECK against /health, and Docker picks that up automatically.
+
+  db-migrate:
+    # One-shot sidecar: runs `alembic upgrade head` against the db and
+    # exits. Reuses the backend image so migrations stay in lockstep
+    # with the application code - same build, same dependency versions,
+    # same alembic/ directory.
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    environment:
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    networks:
+      - cv4_net
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    ports:
+      # Exposed on host port 5433 to avoid clashing with a local
+      # Postgres install on the default 5432.
+      - "5433:5432"
+    volumes:
+      - cv4_db_data:/var/lib/postgresql/data
+    networks:
+      - cv4_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+networks:
+  cv4_net:
+    driver: bridge
+
+volumes:
+  cv4_db_data:

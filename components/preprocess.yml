@@ -1,0 +1,50 @@
+# Azure ML component spec for cv4.training.preprocess.
+#
+# Crops petri dishes out of raw images and tiles each pair into non-overlapping
+# 256x256 patches. The output folder mirrors the four-folder structure that
+# cv4.training.data.build_generators expects, so the train component can
+# consume this output directly without further reshaping.
+#
+# This component is one step of the cv4 training pipeline. It can also be
+# submitted as a standalone job for testing the preprocess stage in isolation.
+
+$schema: https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json
+type: command
+
+name: cv4_preprocess
+display_name: cv4 Preprocess (crop + patch)
+version: 1
+description: Crops petri dishes and tiles raw image/mask pairs into 256x256 patches.
+
+inputs:
+  train_data:
+    type: uri_folder
+    description: Raw train data asset; must contain train_images/ and train_masks/ subdirs.
+  val_data:
+    type: uri_folder
+    description: Raw val data asset; must contain val_images/ and val_masks/ subdirs.
+  patch_size:
+    type: integer
+    default: 256
+    description: Edge length of square patches in pixels.
+  mask_suffix:
+    type: string
+    default: _root_mask.tif
+    description: Filename suffix appended to image stem to find its mask.
+
+outputs:
+  patched_data:
+    type: uri_folder
+    description: Patched four-folder output ready for cv4.training.data.build_generators.
+
+code: ../src
+environment: azureml:cv4-training@latest
+
+command: >-
+  python -m cv4.training.preprocess
+  --train-data-path ${{inputs.train_data}}
+  --val-data-path ${{inputs.val_data}}
+  --output-path ${{outputs.patched_data}}
+  --patch-size ${{inputs.patch_size}}
+  --mask-suffix ${{inputs.mask_suffix}}
+  

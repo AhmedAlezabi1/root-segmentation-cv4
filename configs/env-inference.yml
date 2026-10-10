@@ -1,0 +1,16 @@
+name: cv4-inference
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - tensorflow[and-cuda]==2.18.0
+      - scikit-image
+      - opencv-python-headless
+      - networkx
+      - scipy
+      - numpy
+      - pandas
+      - azureml-inference-server-http
